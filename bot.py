@@ -179,7 +179,13 @@ async def unhide(ctx):
 
 @bot.command(name="help")
 async def help_cmd(ctx):
-    await ctx.send("Commandes:!fakeid!clear!kick!ban!warn!snipe!renew!lock!unlock!hide!unhide!perm!set perms @role <1-10>!change <niv> <cmd>!helpall")
+    embed = discord.Embed(title="📚 Bot Arcane - Aide", color=0x9b59b6)
+    embed.add_field(name="🎭 Fun", value="`!fakeid` `!snipe`", inline=False)
+    embed.add_field(name="🛡️ Modo", value="`!clear` `!kick` `!ban` `!warn` `!renew`", inline=False)
+    embed.add_field(name="🔒 Salon", value="`!lock` `!unlock` `!hide` `!unhide`", inline=False)
+    embed.add_field(name="🔑 Perms", value="`!perm` `!set perms @role 1-10` `!change <niv> <cmd>` `!helpall`", inline=False)
+    embed.set_footer(text="Fais !helpall pour voir les niveaux 1-10")
+    await ctx.send(embed=embed)
 
 @bot.command(name="helpall")
 async def helpall_cmd(ctx):
