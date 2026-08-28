@@ -24,7 +24,7 @@ async def on_ready():
     print('------')
     await bot.change_presence(activity=discord.Game(name=f"avec {PREFIX}help"))
 
-@bot.command(name='fakeid', help='Genere une fausse identite aleatoire pour le fun.')
+@bot.command(name='fakeid', help='Genere de fausses informations pour le fun.')
 @commands.guild_only()
 async def fakeid(ctx):
     annee_actuelle = datetime.datetime.now().year
@@ -33,7 +33,7 @@ async def fakeid(ctx):
     mois = random.randint(1, 12)
     date_naissance = f"{jour:02d}/{mois:02d}/{annee_naissance}"
     numero_tel = f"+3306{random.randint(10000000, 99999999)}"
-    message = f"```\nNom : {random.choice(NOMS_DE_FAMILLE)}\nPrenom : {random.choice(PRENOMS)}\nDate de naissance : {date_naissance}\nVille : {random.choice(VILLES_FRANCE)}\nNum : {numero_tel}\n```\n*Identite 100% fictive - pour le fun uniquement*"
+    message = f"```\nNom : {random.choice(NOMS_DE_FAMILLE)}\nPrenom : {random.choice(PRENOMS)}\nDate de naissance : {date_naissance}\nVille : {random.choice(VILLES_FRANCE)}\nNum : {numero_tel}\n```\n**En vrai Force à toi bg**"
     await ctx.send(message)
 
 @bot.event
