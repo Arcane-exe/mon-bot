@@ -17,7 +17,7 @@ bot.remove_command('help')
 
 PERMS_FILE = "perms.json"
 DEFAULT_PERMS = {
-    "fakeid": 1, "snipe": 1, "help": 1, "helpall": 1, "perm": 1,
+    "snipe": 1, "help": 1, "helpall": 1, "perm": 1,
     "clear": 5, "lock": 6, "unlock": 6, "hide": 7, "unhide": 7,
     "warn": 5, "kick": 6, "ban": 8, "renew": 9, "set": 10, "change": 10
 }
@@ -35,6 +35,10 @@ def save_data(d):
 data = load_data()
 
 def get_user_level(member):
+    # Si personne n'a encore de perms, l'admin du serveur est niveau 10
+    if len(data["role_levels"]) == 0:
+        if member.guild_permissions.administrator or member.guild.owner_id == member.id:
+            return 10
     if member.guild.owner_id == member.id:
         return 10
     max_lvl = 0
@@ -42,7 +46,7 @@ def get_user_level(member):
         lvl = data["role_levels"].get(str(role.id), 0)
         if lvl > max_lvl:
             max_lvl = lvl
-    return max_lvl if max_lvl!= 0 else 1
+    return max_lvl if max_lvl != 0 else 1
 
 def check_perm(ctx, cmd):
     ul = get_user_level(ctx.author)
@@ -51,9 +55,6 @@ def check_perm(ctx, cmd):
         return False, ul, req
     return True, ul, req
 
-NOMS = ["Dupont", "Martin", "Bernard", "Dubois", "Thomas", "Robert"]
-PRENOMS = ["Jean", "Pierre", "Michel", "Nicolas", "David", "Olivier"]
-VILLES = ["Paris", "Marseille", "Lyon", "Toulouse", "Nice", "Nantes"]
 snipe_messages = {}
 
 @bot.event
@@ -64,15 +65,6 @@ async def on_ready():
 async def on_message_delete(message):
     if not message.author.bot:
         snipe_messages[message.channel.id] = message
-
-@bot.command(name="fakeid")
-async def fakeid(ctx):
-    ok, ul, req = check_perm(ctx, "fakeid")
-    if not ok:
-        await ctx.send(f"❌ Niveau {req} requis (tu es {ul})")
-        return
-    txt = f"```\nNom : {random.choice(NOMS)}\nPrenom : {random.choice(PRENOMS)}\nVille : {random.choice(VILLES)}\n```"
-    await ctx.send(txt)
 
 @bot.command(name="perm")
 async def perm_cmd(ctx, member: discord.Member = None):
@@ -180,7 +172,7 @@ async def unhide(ctx):
 @bot.command(name="help")
 async def help_cmd(ctx):
     embed = discord.Embed(title="📚 Bot Arcane - Aide", color=0x9b59b6)
-    embed.add_field(name="🎭 Fun", value="`!fakeid` `!snipe`", inline=False)
+    embed.add_field(name="🎭 Fun", value="`!snipe`", inline=False)
     embed.add_field(name="🛡️ Modo", value="`!clear` `!kick` `!ban` `!warn` `!renew`", inline=False)
     embed.add_field(name="🔒 Salon", value="`!lock` `!unlock` `!hide` `!unhide`", inline=False)
     embed.add_field(name="🔑 Perms", value="`!perm` `!set perms @role 1-10` `!change <niv> <cmd>` `!helpall`", inline=False)
