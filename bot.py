@@ -12,6 +12,7 @@ PREFIX = "!"
 TOKEN = os.getenv("TOKEN")
 
 bot = commands.Bot(command_prefix=PREFIX, intents=intents)
+bot.remove_command('help')
 
 NOMS_DE_FAMILLE = ["Dupont", "Martin", "Bernard", "Dubois", "Thomas", "Robert", "Richard", "Petit", "Durand", "Leroy", "Moreau", "Simon", "Laurent", "Lefebvre", "Michel", "Garcia", "David", "Bertrand", "Roux", "Morel"]
 PRENOMS = ["Jean", "Pierre", "Michel", "Andre", "Philippe", "Alain", "Christian", "Daniel", "Bernard", "Patrick", "Thierry", "Christophe", "Frederic", "Didier", "Pascal", "Nicolas", "Stephane", "David", "Olivier", "Sebastien"]
