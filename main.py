@@ -22,7 +22,8 @@ if not os.path.exists(DB_FILE):
     json.dump({
         "whitelist":[], "antilink":{}, "antispam":{}, "antibot":{},
         "antichannel":{}, "antirole":{}, "antiban":{}, "antikick":{},
-        "antiraid":{}, "welcome":{}, "logs":{}, "autorole":{}, "warns":{}
+        "antiraid":{}, "welcome":{}, "logs":{}, "autorole":{}, "warns":{},
+        "gwconfig":{}, "giveaways":{}
     }, open(DB_FILE,"w"))
 def get_db(): return json.load(open(DB_FILE))
 def save_db(d): json.dump(d, open(DB_FILE,"w"), indent=4)
@@ -342,5 +343,229 @@ async def unban_slash(interaction: discord.Interaction, user_id: str):
 @commands.has_permissions(ban_members=True)
 async def ban_p(ctx, member: discord.Member, *, reason=None):
     if not is_wl(member.id): await member.ban(reason=reason); await ctx.send(f"🔨 {member} banni")
+
+import random, string, asyncio
+
+def gen_code(): return ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
+
+def get_gw_config(gid):
+    db=get_db()
+    if str(gid) not in db["gwconfig"]:
+        db["gwconfig"][str(gid)] = {
+            "prix": "Nitro x1", "dure": 600000, "emoji": "🎉",
+            "salon": None, "wins": 1, "roleinterdit": [], "rolerequis": [], "vocal": False
+        }
+        save_db(db)
+    return db["gwconfig"][str(gid)]
+
+def format_dure(ms):
+    s = ms // 1000
+    if s < 60: return f"{s}s"
+    m = s // 60
+    if m < 60: return f"{m}m"
+    h = m // 60
+    if h < 24: return f"{h}h {m%60}m"
+    d = h // 24
+    return f"{d}j {h%24}h"
+
+class GiveawayConfigSelect(discord.ui.Select):
+    def __init__(self, guild_id):
+        self.gid = guild_id
+        super().__init__(placeholder="Modifier un paramètre...", options=[
+            discord.SelectOption(label="Gain", emoji="🎁", value="gain"),
+            discord.SelectOption(label="Durée", emoji="⏱️", value="duree"),
+            discord.SelectOption(label="Salon", emoji="🏷️", value="salon"),
+            discord.SelectOption(label="Emoji", emoji="🎉", value="emoji"),
+            discord.SelectOption(label="Rôle obligatoire", emoji="⛓️", value="obligatoire"),
+            discord.SelectOption(label="Rôle interdit", emoji="🚫", value="interdit"),
+            discord.SelectOption(label="Vocal obligatoire", emoji="🔊", value="vocal"),
+        ])
+    async def callback(self, interaction: discord.Interaction):
+        cfg = get_gw_config(self.gid)
+        if self.values[0] == "vocal":
+            cfg["vocal"] = not cfg["vocal"]
+            db=get_db(); db["gwconfig"][str(self.gid)]=cfg; save_db(db)
+            return await interaction.response.edit_message(embed=await build_gw_embed(interaction.guild), view=GiveawaySetupView(self.gid))
+
+        await interaction.response.send_modal(GiveawayModal(self.values[0], self.gid))
+
+class GiveawayModal(discord.ui.Modal):
+    def __init__(self, field, gid):
+        super().__init__(title=f"Modifier {field}")
+        self.field = field; self.gid = gid
+        self.input = discord.ui.TextInput(label=f"Nouvelle valeur pour {field}", placeholder="Ex: Nitro x1 ou 1h ou #giveaway", required=True)
+        self.add_item(self.input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        cfg = get_gw_config(self.gid); db=get_db()
+        val = self.input.value
+        if self.field == "gain": cfg["prix"] = val
+        elif self.field == "duree":
+            import re
+            m = re.match(r"(\d+)([smhj])", val.lower())
+            if not m: return await interaction.response.send_message("Format invalide. Ex: 10m, 1h, 2j", ephemeral=True)
+            num, unit = int(m.group(1)), m.group(2)
+            mult = {"s":1, "m":60, "h":3600, "j":86400}[unit]
+            cfg["dure"] = num * mult * 1000
+        elif self.field == "salon":
+            ch_id = int(re.sub(r"[<#>]","", val)) if val.startswith("<#") else int(val) if val.isdigit() else None
+            if not ch_id:
+                try: ch_id = interaction.guild.get_channel(int(val.replace("<#","").replace(">",""))).id
+                except: return await interaction.response.send_message("Salon invalide mentionne #salon", ephemeral=True)
+            cfg["salon"] = ch_id
+        elif self.field == "emoji": cfg["emoji"] = val
+        elif self.field in ["obligatoire","interdit"]:
+            role_id = int(val.replace("<@&","").replace(">","")) if "<@&" in val else int(val) if val.isdigit() else None
+            if not role_id: return await interaction.response.send_message("Mentionne un rôle @role", ephemeral=True)
+            key = "rolerequis" if self.field=="obligatoire" else "roleinterdit"
+            if role_id in cfg[key]: cfg[key].remove(role_id)
+            else: cfg[key].append(role_id)
+
+        db["gwconfig"][str(self.gid)] = cfg; save_db(db)
+        await interaction.response.edit_message(embed=await build_gw_embed(interaction.guild), view=GiveawaySetupView(self.gid))
+
+async def build_gw_embed(guild):
+    cfg = get_gw_config(guild.id)
+    salon = guild.get_channel(cfg["salon"]) if cfg["salon"] else None
+    req = ", ".join([f"<@&{r}>" for r in cfg["rolerequis"]]) or "Aucun"
+    inter = ", ".join([f"<@&{r}>" for r in cfg["roleinterdit"]]) or "Aucun"
+    e = discord.Embed(title="🎉 Bot Arcane - Giveaway Config", description=f"Configure ton giveaway puis lance-le", color=0x2B2D31)
+    e.add_field(name="🎁 Gain", value=f"```{cfg['prix']}```", inline=True)
+    e.add_field(name="⏱️ Durée", value=f"```{format_dure(cfg['dure'])}```", inline=True)
+    e.add_field(name="🏷️ Salon", value=f"```{salon.name if salon else 'Non configuré'}```", inline=True)
+    e.add_field(name="⛓️ Rôle requis", value=req, inline=True)
+    e.add_field(name="🚫 Rôle interdit", value=inter, inline=True)
+    e.add_field(name="🔊 Vocal requis", value=f"{'✅' if cfg['vocal'] else '❌'}", inline=True)
+    e.add_field(name="Emoji", value=cfg["emoji"], inline=True)
+    e.set_footer(text="Bot Arcane • Giveaway")
+    return be(e)
+
+class GiveawaySetupView(discord.ui.View):
+    def __init__(self, gid):
+        super().__init__(timeout=300); self.gid=gid
+        self.add_item(GiveawayConfigSelect(gid))
+    @discord.ui.button(label="Lancer le giveaway", style=discord.ButtonStyle.success, emoji="🚀")
+    async def start(self, interaction: discord.Interaction, button: discord.ui.Button):
+        cfg = get_gw_config(self.gid)
+        if not cfg["salon"]: return await interaction.response.send_message("❌ Configure le salon d'abord!", ephemeral=True)
+        channel = interaction.guild.get_channel(cfg["salon"])
+        if not channel: return await interaction.response.send_message("❌ Salon introuvable", ephemeral=True)
+
+        code = gen_code()
+        end_ts = datetime.now() + timedelta(milliseconds=cfg["dure"])
+
+        embed = discord.Embed(title=f"🎉 Giveaway: {cfg['prix']}", description=f"Réagis avec {cfg['emoji']} pour participer!\n**Gagnants:** {cfg['wins']}\n**Fin:** <t:{int(end_ts.timestamp())}:R>", color=0x2B2D31)
+        embed.set_footer(text=f"Bot Arcane • Code: {code}")
+
+        view = GiveawayJoinView(code)
+        msg = await channel.send(embed=embed, view=view)
+
+        db=get_db()
+        gw = {
+            "code": code, "messageId": msg.id, "channelId": channel.id, "guildId": str(self.gid),
+            "prix": cfg["prix"], "endTime": end_ts.timestamp(), "ended": False,
+            "participants": [], "rolerequis": cfg["rolerequis"], "roleinterdit": cfg["roleinterdit"],
+            "vocal": cfg["vocal"], "author": interaction.user.id
+        }
+        if "giveaways" not in db: db["giveaways"]={}
+        db["giveaways"][code]=gw; save_db(db)
+
+        await interaction.response.send_message(f"✅ Giveaway lancé dans {channel.mention} [Lien](https://discord.com/channels/{self.gid}/{channel.id}/{msg.id})", ephemeral=True)
+        bot.loop.create_task(giveaway_scheduler(code))
+
+class GiveawayJoinView(discord.ui.View):
+    def __init__(self, code):
+        super().__init__(timeout=None)
+        self.code = code
+    @discord.ui.button(label="Participer", style=discord.ButtonStyle.primary, emoji="🎉", custom_id="gw_join")
+    async def join(self, interaction: discord.Interaction, button: discord.ui.Button):
+        db=get_db(); gw=db["giveaways"].get(self.code)
+        if not gw or gw["ended"]: return await interaction.response.send_message("Giveaway terminé", ephemeral=True)
+        # checks rôles
+        if gw["rolerequis"] and not any(r.id in gw["rolerequis"] for r in interaction.user.roles):
+            return await interaction.response.send_message("❌ Il te manque un rôle requis", ephemeral=True)
+        if any(r.id in gw["roleinterdit"] for r in interaction.user.roles):
+            return await interaction.response.send_message("❌ Tu as un rôle interdit", ephemeral=True)
+        if gw["vocal"] and not interaction.user.voice:
+            return await interaction.response.send_message("❌ Tu dois être en vocal", ephemeral=True)
+        if interaction.user.id in gw["participants"]:
+            return await interaction.response.send_message("Tu participes déjà!", ephemeral=True)
+
+        gw["participants"].append(interaction.user.id)
+        db["giveaways"][self.code]=gw; save_db(db)
+        await interaction.response.send_message(f"✅ Tu participes pour **{gw['prix']}**!", ephemeral=True)
+
+    @discord.ui.button(label="Participants", style=discord.ButtonStyle.secondary, custom_id="gw_list")
+    async def list_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        db=get_db(); gw=db["giveaways"].get(self.code)
+        if not gw: return
+        count = len(gw["participants"])
+        await interaction.response.send_message(f"👥 **{count}** participants", ephemeral=True)
+
+class PersistentGiveawayView(discord.ui.View):
+    def __init__(self, code):
+        super().__init__(timeout=None)
+        self.code = code
+        self.add_item(discord.ui.Button(label="Participer", style=discord.ButtonStyle.primary, emoji="🎉", custom_id=f"giveaway_entry_{code}"))
+        self.add_item(discord.ui.Button(label="Participants", style=discord.ButtonStyle.secondary, custom_id=f"giveaway_list_{code}"))
+
+async def giveaway_scheduler(code):
+    while True:
+        await asyncio.sleep(10)
+        db=get_db(); gw=db["giveaways"].get(code)
+        if not gw or gw["ended"]: return
+        if datetime.now().timestamp() >= gw["endTime"]:
+            channel = bot.get_channel(gw["channelId"])
+            if channel:
+                try:
+                    msg = await channel.fetch_message(gw["messageId"])
+                    if not gw["participants"]:
+                        e = discord.Embed(title="🎉 Giveaway terminé", description=f"**{gw['prix']}**\nAucun participant", color=0xFF4444)
+                        await msg.edit(embed=e, view=None)
+                        await channel.send(f"Aucun gagnant pour **{gw['prix']}**")
+                    else:
+                        winner_id = random.choice(gw["participants"])
+                        winner = channel.guild.get_member(winner_id)
+                        e = discord.Embed(title="🎉 Giveaway terminé", description=f"**{gw['prix']}**\nGagnant: {winner.mention if winner else f'<@{winner_id}>'}", color=0x00FF88)
+                        await msg.edit(embed=e, view=None)
+                        await channel.send(f"🎉 Bravo {winner.mention if winner else f'<@{winner_id}>'} tu as gagné **{gw['prix']}**!")
+                except: pass
+            gw["ended"]=True; db["giveaways"][code]=gw; save_db(db)
+            return
+
+@bot.tree.command(name="giveaway", description="Configurer un giveaway")
+async def giveaway_cmd(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.manage_guild:
+        return await interaction.response.send_message("❌ Permission Manage Server requise", ephemeral=True)
+    e = await build_gw_embed(interaction.guild)
+    await interaction.response.send_message(embed=e, view=GiveawaySetupView(interaction.guild.id))
+
+@bot.tree.command(name="greroll", description="Retirer un gagnant giveaway")
+async def greroll(interaction: discord.Interaction, code: str):
+    db=get_db(); gw=db["giveaways"].get(code.upper())
+    if not gw: return await interaction.response.send_message("Code invalide", ephemeral=True)
+    if not gw["participants"]: return await interaction.response.send_message("Pas de participants", ephemeral=True)
+    winner_id = random.choice(gw["participants"])
+    await interaction.response.send_message(f"🎉 Nouveau gagnant: <@{winner_id}> pour **{gw['prix']}**")
+
+@bot.event
+async def on_interaction(interaction: discord.Interaction):
+    if interaction.type == discord.InteractionType.component:
+        cid = interaction.data.get("custom_id","")
+        if cid.startswith("giveaway_entry_"):
+            code = cid.replace("giveaway_entry_","")
+            db=get_db(); gw=db["giveaways"].get(code)
+            if not gw: return
+            if gw["rolerequis"] and not any(r.id in gw["rolerequis"] for r in interaction.user.roles):
+                return await interaction.response.send_message("❌ Rôle requis manquant", ephemeral=True)
+            if interaction.user.id in gw["participants"]:
+                return await interaction.response.send_message("Déjà inscrit", ephemeral=True)
+            gw["participants"].append(interaction.user.id)
+            db["giveaways"][code]=gw; save_db(db)
+            await interaction.response.send_message(f"✅ Inscrit pour {gw['prix']}", ephemeral=True)
+        elif cid.startswith("giveaway_list_"):
+            code = cid.replace("giveaway_list_","")
+            db=get_db(); gw=db["giveaways"].get(code)
+            if gw: await interaction.response.send_message(f"👥 {len(gw['participants'])} participants", ephemeral=True)
 
 bot.run(TOKEN)
