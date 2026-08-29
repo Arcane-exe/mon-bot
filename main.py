@@ -13,7 +13,7 @@ TOKEN = os.getenv("TOKEN")
 
 app = Flask(__name__)
 @app.route('/')
-def home(): return "Protect Bot is ON"
+def home(): return "Protect Bot is ON - Snoway Clone"
 def run_web(): app.run(host="0.0.0.0", port=10000)
 threading.Thread(target=run_web).start()
 
@@ -46,6 +46,16 @@ async def on_ready():
 async def on_message_delete(message):
     if message.author.bot: return
     snipe_cache[message.channel.id] = {"content": message.content, "author": message.author, "time": datetime.now()}
+    # LOGS auto
+    try:
+        db=get_db()
+        gid=str(message.guild.id) if message.guild else None
+        if gid and gid in db["logs"]:
+            ch = message.guild.get_channel(db["logs"][gid])
+            if ch:
+                e = discord.Embed(title="🗑️ Message Supprimé", description=f"**Auteur:** {message.author.mention}\n**Salon:** {message.channel.mention}\n**Contenu:**\n{message.content[:1000] or 'Aucun / Embed'}", color=0xFF4444)
+                await ch.send(embed=be(e))
+    except: pass
 
 @bot.event
 async def on_message(message):
@@ -78,6 +88,22 @@ async def on_message(message):
 async def on_member_join(member):
     db = get_db()
     gid = str(member.guild.id)
+
+    if gid in db["autorole"]:
+        try:
+            role = member.guild.get_role(db["autorole"][gid])
+            if role: await member.add_roles(role)
+        except: pass
+
+    if gid in db["welcome"]:
+        try:
+            ch = member.guild.get_channel(db["welcome"][gid])
+            if ch:
+                e = discord.Embed(title=f"Bienvenue {member.name} 👋", description=f"Bienvenue {member.mention} sur **{member.guild.name}**!\n\nTu es le **{member.guild.member_count}ème** membre.", color=0x2B2D31)
+                e.set_thumbnail(url=member.display_avatar.url)
+                await ch.send(embed=e)
+        except: pass
+
     if not db["antiraid"].get(gid, {}).get("enabled"): return
     now = datetime.now()
     join_cache[gid].append(now)
@@ -112,8 +138,9 @@ class HelpSelect(discord.ui.Select):
         elif self.values[0] == "Gestion":
             e = be(discord.Embed(title="⚙️ Gestion", description="`/setwelcome #salon`\n`/setlogs #salon`\n`/setautorole @role`"), interaction)
         else:
-            e = be(discord.Embed(title="💎 Utile", description="`/serverinfo`\n`/snipe`\n`/ping`"), interaction)
+            e = be(discord.Embed(title="💎 Utile", description="`/serverinfo`\n`/snipe`\n`/ping`\n`/avatar`"), interaction)
         await interaction.response.edit_message(embed=e)
+
 class HelpView(discord.ui.View):
     def __init__(self): super().__init__(timeout=60); self.add_item(HelpSelect())
 
@@ -156,14 +183,28 @@ async def antiraid(interaction: discord.Interaction, status: str):
     db=get_db(); gid=str(interaction.guild.id)
     if gid not in db["antiraid"]: db["antiraid"][gid]={}
     db["antiraid"][gid]["enabled"]=(status=="on"); save_db(db)
-    await interaction.response.send_message(embed=be(discord.Embed(title="🛡️ Anti-Raid", description=f"Anti-Raid **{status.upper()}**\n> 5 joins / 10s = ban + lockdown\n> 5 msg / 4s = timeout"), interaction))
+    await interaction.response.send_message(embed=be(discord.Embed(title="🛡️ Anti-Raid", description=f"Anti-Raid **{status.upper()}**"), interaction))
+
+@bot.tree.command(name="setlogs", description="Définir le salon des logs")
+async def setlogs(interaction: discord.Interaction, salon: discord.TextChannel):
+    db=get_db(); gid=str(interaction.guild.id); db["logs"][gid]=salon.id; save_db(db)
+    await interaction.response.send_message(embed=be(discord.Embed(title="✅ Logs", description=f"Logs définis sur {salon.mention}"), interaction))
+
+@bot.tree.command(name="setwelcome", description="Définir le salon de bienvenue")
+async def setwelcome(interaction: discord.Interaction, salon: discord.TextChannel):
+    db=get_db(); gid=str(interaction.guild.id); db["welcome"][gid]=salon.id; save_db(db)
+    await interaction.response.send_message(embed=be(discord.Embed(title="✅ Welcome", description=f"Welcome défini sur {salon.mention}"), interaction))
+
+@bot.tree.command(name="setautorole", description="Définir l'autorole")
+async def setautorole(interaction: discord.Interaction, role: discord.Role):
+    db=get_db(); gid=str(interaction.guild.id); db["autorole"][gid]=role.id; save_db(db)
+    await interaction.response.send_message(embed=be(discord.Embed(title="✅ Autorole", description=f"Autorole défini sur {role.mention}"), interaction))
 
 @bot.tree.command(name="ban", description="Bannir un membre")
 async def ban(interaction: discord.Interaction, membre: discord.Member, raison: str = "Aucune raison"):
     if is_wl(membre.id): return await interaction.response.send_message(embed=be(discord.Embed(description="❌ Whitelist, impossible.")), ephemeral=True)
     await membre.ban(reason=raison)
-    e = be(discord.Embed(title="🔨 Ban", description=f"**Membre:** {membre.mention}\n**Raison:** {raison}"), interaction)
-    e.color = 0xFF4444
+    e = be(discord.Embed(title="🔨 Ban", description=f"**Membre:** {membre.mention}\n**Raison:** {raison}"), interaction); e.color = 0xFF4444
     await interaction.response.send_message(embed=e)
 
 @bot.tree.command(name="kick", description="Expulser un membre")
@@ -206,5 +247,16 @@ async def snipe(interaction: discord.Interaction):
     e = be(discord.Embed(title="🗑️ Snipe", description=data["content"]), interaction)
     e.set_author(name=str(data["author"]), icon_url=data["author"].display_avatar.url)
     await interaction.response.send_message(embed=e)
+
+@bot.tree.command(name="avatar", description="Avatar d'un membre")
+async def avatar(interaction: discord.Interaction, membre: discord.Member = None):
+    m = membre or interaction.user
+    e = be(discord.Embed(title=f"Avatar de {m.name}", description=f"[Lien direct]({m.display_avatar.url})"), interaction)
+    e.set_image(url=m.display_avatar.url)
+    await interaction.response.send_message(embed=e)
+
+@bot.tree.command(name="ping", description="Ping du bot")
+async def ping(interaction: discord.Interaction):
+    await interaction.response.send_message(embed=be(discord.Embed(description=f"🏓 **{round(bot.latency*1000)}ms**"), interaction))
 
 bot.run(TOKEN)
