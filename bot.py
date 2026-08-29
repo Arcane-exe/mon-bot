@@ -1,194 +1,223 @@
 import discord
 from discord.ext import commands
-import random
-import os
-import json
+from discord import app_commands
+import os, json, re
+from datetime import datetime, timedelta
+from collections import defaultdict
+from dotenv import load_dotenv
 
-intents = discord.Intents.default()
-intents.members = True
-intents.message_content = True
-intents.guilds = True
-
-PREFIX = "!"
+load_dotenv()
 TOKEN = os.getenv("TOKEN")
 
-bot = commands.Bot(command_prefix=PREFIX, intents=intents)
-bot.remove_command('help')
+DB_FILE = "db.json"
+if not os.path.exists(DB_FILE):
+    json.dump({"whitelist":[],"antilink":{},"antiraid":{},"welcome":{},"logs":{},"autorole":{},"warns":{}}, open(DB_FILE,"w"))
+def get_db(): return json.load(open(DB_FILE))
+def save_db(d): json.dump(d, open(DB_FILE,"w"), indent=4)
 
-PERMS_FILE = "perms.json"
-DEFAULT_PERMS = {
-    "snipe": 1, "help": 1, "helpall": 1, "perm": 1,
-    "clear": 5, "lock": 6, "unlock": 6, "hide": 7, "unhide": 7,
-    "warn": 5, "kick": 6, "ban": 8, "renew": 9, "set": 10, "change": 10
-}
+intents = discord.Intents.all()
+bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
-def load_data():
-    if not os.path.exists(PERMS_FILE):
-        return {"role_levels": {}, "cmd_levels": DEFAULT_PERMS}
-    with open(PERMS_FILE, "r") as f:
-        return json.load(f)
+join_cache = defaultdict(list)
+spam_cache = defaultdict(list)
+snipe_cache = {}
 
-def save_data(d):
-    with open(PERMS_FILE, "w") as f:
-        json.dump(d, f, indent=4)
+def be(embed: discord.Embed, interaction: discord.Interaction = None):
+    embed.color = 0x2B2D31
+    embed.timestamp = datetime.now()
+    if interaction:
+        embed.set_footer(text=f"Demandé par {interaction.user}", icon_url=interaction.user.display_avatar.url)
+    return embed
 
-data = load_data()
-
-def get_user_level(member):
-    # Si personne n'a encore de perms, l'admin du serveur est niveau 10
-    if len(data["role_levels"]) == 0:
-        if member.guild_permissions.administrator or member.guild.owner_id == member.id:
-            return 10
-    if member.guild.owner_id == member.id:
-        return 10
-    max_lvl = 0
-    for role in member.roles:
-        lvl = data["role_levels"].get(str(role.id), 0)
-        if lvl > max_lvl:
-            max_lvl = lvl
-    return max_lvl if max_lvl != 0 else 1
-
-def check_perm(ctx, cmd):
-    ul = get_user_level(ctx.author)
-    req = data["cmd_levels"].get(cmd, 1)
-    if ul < req:
-        return False, ul, req
-    return True, ul, req
-
-snipe_messages = {}
+def is_wl(uid): return uid in get_db()["whitelist"]
 
 @bot.event
 async def on_ready():
-    print(f"Connecte en tant que {bot.user.name}")
+    print(f"Connecté : {bot.user} - Protect Clean")
+    await bot.tree.sync()
 
 @bot.event
 async def on_message_delete(message):
-    if not message.author.bot:
-        snipe_messages[message.channel.id] = message
+    if message.author.bot: return
+    snipe_cache[message.channel.id] = {"content": message.content, "author": message.author, "time": datetime.now()}
 
-@bot.command(name="perm")
-async def perm_cmd(ctx, member: discord.Member = None):
-    member = member or ctx.author
-    lvl = get_user_level(member)
-    await ctx.send(f"🔑 {member.mention} niveau {lvl}/10")
+@bot.event
+async def on_message(message):
+    if message.author.bot or not message.guild: return
+    db = get_db()
+    gid = str(message.guild.id)
 
-@bot.command(name="set")
-async def set_perms(ctx, type_name, role: discord.Role, level: int):
-    ok, ul, req = check_perm(ctx, "set")
-    if not ok:
-        await ctx.send(f"❌ Niveau {req} requis (tu es {ul})")
+    if is_wl(message.author.id) or message.author.guild_permissions.administrator:
+        await bot.process_commands(message)
         return
-    if type_name!= "perms":
-        await ctx.send("Usage:!set perms @role 1-10")
-        return
-    data["role_levels"][str(role.id)] = level
-    save_data(data)
-    await ctx.send(f"✅ {role.mention} niveau {level}")
 
-@bot.command(name="change")
-async def change_cmd(ctx, level: int, cmd_name: str):
-    ok, ul, req = check_perm(ctx, "change")
-    if not ok:
-        await ctx.send(f"❌ Niveau {req} requis (tu es {ul})")
-        return
-    data["cmd_levels"][cmd_name] = level
-    save_data(data)
-    await ctx.send(f"✅ {cmd_name} passe niveau {level}")
+    if db["antilink"].get(gid, {}).get("enabled"):
+        if re.search(r"https?://|discord\.gg|discord\.com/invite", message.content.lower()):
+            try:
+                await message.delete()
+                e = be(discord.Embed(title="🔗 Anti-Lien", description=f"{message.author.mention} Les liens sont interdits dans ce salon."))
+                await message.channel.send(embed=e, delete_after=5)
+            except: pass
+            return
 
-@bot.command()
-async def clear(ctx, amount: int = 10):
-    ok, ul, req = check_perm(ctx, "clear")
-    if not ok:
-        await ctx.send(f"❌ Niveau {req} requis")
-        return
-    deleted = await ctx.channel.purge(limit=amount+1)
-    await ctx.send(f"🧹 {len(deleted)-1} suppr", delete_after=3)
+    if db["antiraid"].get(gid, {}).get("enabled"):
+        spam_cache[message.author.id].append(datetime.now())
+        spam_cache[message.author.id] = [t for t in spam_cache[message.author.id] if (datetime.now()-t).seconds < 4]
+        if len(spam_cache[message.author.id]) > 5:
+            try:
+                await message.author.timeout(timedelta(minutes=5), reason="Anti-Spam")
+                e = be(discord.Embed(title="🛡️ Anti-Spam", description=f"{message.author.mention} a été mute 5min pour spam."))
+                await message.channel.send(embed=e, delete_after=5)
+            except: pass
 
-@bot.command()
-async def kick(ctx, member: discord.Member):
-    ok, ul, req = check_perm(ctx, "kick")
-    if not ok:
-        await ctx.send(f"❌ Niveau {req} requis")
-        return
-    await member.kick()
-    await ctx.send(f"✅ {member.mention} kick")
+    await bot.process_commands(message)
 
-@bot.command()
-async def ban(ctx, member: discord.Member):
-    ok, ul, req = check_perm(ctx, "ban")
-    if not ok:
-        await ctx.send(f"❌ Niveau {req} requis")
-        return
-    await member.ban()
-    await ctx.send(f"✅ {member.mention} ban")
+@bot.event
+async def on_member_join(member):
+    db = get_db()
+    gid = str(member.guild.id)
+    if not db["antiraid"].get(gid, {}).get("enabled"): return
 
-@bot.command()
-async def warn(ctx, member: discord.Member):
-    ok, ul, req = check_perm(ctx, "warn")
-    if not ok:
-        await ctx.send(f"❌ Niveau {req} requis")
-        return
-    await ctx.send(f"⚠️ {member.mention} warn")
+    now = datetime.now()
+    join_cache[gid].append(now)
+    join_cache[gid] = [t for t in join_cache[gid] if (now - t).seconds < 10]
 
-@bot.command()
-async def snipe(ctx):
-    msg = snipe_messages.get(ctx.channel.id)
-    if not msg:
-        await ctx.send("Rien a snipe")
-        return
-    await ctx.send(msg.content)
+    if len(join_cache[gid]) > 5:
+        if is_wl(member.id): return
+        try:
+            await member.ban(reason="Protect: Raid détecté")
+            e = be(discord.Embed(title="🚨 Raid Détecté", description=f"**{member}** a été banni.\n> {len(join_cache[gid])} joins en 10s\nLockdown activé."))
+            e.color = 0xFF4444
+            for ch in member.guild.text_channels[:3]:
+                await ch.send(embed=e)
+            for ch in member.guild.channels:
+                try: await ch.set_permissions(member.guild.default_role, send_messages=False)
+                except: pass
+        except: pass
 
-@bot.command()
-async def renew(ctx):
-    ok, ul, req = check_perm(ctx, "renew")
-    if not ok:
-        await ctx.send(f"❌ Niveau {req} requis")
-        return
-    new = await ctx.channel.clone()
-    await new.edit(position=ctx.channel.position)
-    await ctx.channel.delete()
-    await new.send(f"Renew par {ctx.author.mention}")
+class HelpSelect(discord.ui.Select):
+    def __init__(self):
+        super().__init__(placeholder="Choisis une catégorie...", options=[
+            discord.SelectOption(label="Modération", emoji="🔨", description="ban, kick, timeout..."),
+            discord.SelectOption(label="Protect", emoji="🛡️", description="whitelist, anti-raid, anti-lien"),
+            discord.SelectOption(label="Gestion", emoji="⚙️", description="logs, welcome, autorole"),
+            discord.SelectOption(label="Utile", emoji="💎", description="info, avatar, snipe"),
+        ])
+    async def callback(self, interaction: discord.Interaction):
+        db = get_db()
+        if self.values[0] == "Modération":
+            e = be(discord.Embed(title="🔨 Modération", description="`/ban` `membre raison`\n`/unban` `id`\n`/kick`\n`/timeout` `membre minutes`\n`/untimeout`\n`/clear` `nombre`\n`/lock` `/unlock`\n`/slowmode` `secondes`\n`/nuke`\n`/warn` `/unwarn` `/warnlist`"), interaction)
+        elif self.values[0] == "Protect":
+            e = be(discord.Embed(title="🛡️ Protect", description="`/whitelist add/remove/list`\n`/antilink on/off`\n`/antiraid on/off`\n`/hide` `/unhide` - cacher un salon\nBypass auto si whitelist ou admin"), interaction)
+        elif self.values[0] == "Gestion":
+            e = be(discord.Embed(title="⚙️ Gestion", description="`/setwelcome #salon`\n`/setlogs #salon`\n`/setautorole @role`\n`/addrole @user @role`\n`/removerole`"), interaction)
+        else:
+            e = be(discord.Embed(title="💎 Utile", description="`/serverinfo`\n`/userinfo`\n`/avatar`\n`/banner`\n`/ping`\n`/snipe`\n`/say`\n`/embed` - créateur d'embed"), interaction)
+        await interaction.response.edit_message(embed=e)
 
-@bot.command()
-async def lock(ctx):
-    await ctx.channel.set_permissions(ctx.guild.default_role, send_messages=False)
-    await ctx.send("🔒 Verrouille")
+class HelpView(discord.ui.View):
+    def __init__(self): super().__init__(timeout=60); self.add_item(HelpSelect())
 
-@bot.command()
-async def unlock(ctx):
-    await ctx.channel.set_permissions(ctx.guild.default_role, send_messages=True)
-    await ctx.send("🔓 Deverrouille")
+@bot.tree.command(name="help", description="Menu d'aide du bot protect")
+async def help_cmd(interaction: discord.Interaction):
+    e = be(discord.Embed(title="🛡️ Protect Bot - Panel", description="Un bot protect clean, rapide et sécurisé.\n\n**Sélectionne une catégorie ci-dessous** pour voir les commandes.\n\n> Anti-Raid • Anti-Lien • Anti-Spam • Whitelist\n> Logs • Welcome • Gestion complète"), interaction)
+    e.set_thumbnail(url=bot.user.display_avatar.url)
+    await interaction.response.send_message(embed=e, view=HelpView())
 
-@bot.command()
-async def hide(ctx):
-    await ctx.channel.set_permissions(ctx.guild.default_role, view_channel=False)
-    await ctx.send("🙈 Cache")
+@bot.tree.command(name="whitelist", description="Gérer la whitelist")
+@app_commands.choices(action=[app_commands.Choice(name="add", value="add"), app_commands.Choice(name="remove", value="remove"), app_commands.Choice(name="list", value="list")])
+async def whitelist(interaction: discord.Interaction, action: str, membre: discord.Member = None):
+    if not interaction.user.guild_permissions.administrator: return await interaction.response.send_message(embed=be(discord.Embed(description="❌ Pas admin")), ephemeral=True)
+    db = get_db()
+    if action == "add" and membre:
+        if membre.id not in db["whitelist"]: db["whitelist"].append(membre.id)
+        save_db(db)
+        e = be(discord.Embed(title="✅ Whitelist", description=f"{membre.mention} a été ajouté à la whitelist.\nIl bypass tout le protect."), interaction)
+        await interaction.response.send_message(embed=e)
+    elif action == "remove" and membre:
+        if membre.id in db["whitelist"]: db["whitelist"].remove(membre.id)
+        save_db(db)
+        e = be(discord.Embed(title="❌ Whitelist", description=f"{membre.mention} retiré."), interaction)
+        await interaction.response.send_message(embed=e)
+    else:
+        lst = "\n".join([f"<@{uid}> - `{uid}`" for uid in db["whitelist"]]) or "Aucun"
+        e = be(discord.Embed(title="📋 Whitelist", description=lst), interaction)
+        await interaction.response.send_message(embed=e, ephemeral=True)
 
-@bot.command()
-async def unhide(ctx):
-    await ctx.channel.set_permissions(ctx.guild.default_role, view_channel=True)
-    await ctx.send("👁️ Visible")
+@bot.tree.command(name="antilink", description="Activer l'anti-lien")
+@app_commands.choices(status=[app_commands.Choice(name="on", value="on"), app_commands.Choice(name="off", value="off")])
+async def antilink(interaction: discord.Interaction, status: str):
+    db = get_db(); gid=str(interaction.guild.id)
+    if gid not in db["antilink"]: db["antilink"][gid]={}
+    db["antilink"][gid]["enabled"]=(status=="on"); save_db(db)
+    e = be(discord.Embed(title="🔗 Anti-Lien", description=f"Anti-lien **{status.upper()}**\nSupprime tous les liens, invites discord."), interaction)
+    e.color = 0x00FF88 if status=="on" else 0xFF4444
+    await interaction.response.send_message(embed=e)
 
-@bot.command(name="help")
-async def help_cmd(ctx):
-    embed = discord.Embed(title="📚 Bot Arcane - Aide", color=0x9b59b6)
-    embed.add_field(name="🎭 Fun", value="`!snipe`", inline=False)
-    embed.add_field(name="🛡️ Modo", value="`!clear` `!kick` `!ban` `!warn` `!renew`", inline=False)
-    embed.add_field(name="🔒 Salon", value="`!lock` `!unlock` `!hide` `!unhide`", inline=False)
-    embed.add_field(name="🔑 Perms", value="`!perm` `!set perms @role 1-10` `!change <niv> <cmd>` `!helpall`", inline=False)
-    embed.set_footer(text="Fais !helpall pour voir les niveaux 1-10")
-    await ctx.send(embed=embed)
+@bot.tree.command(name="antiraid", description="Activer l'anti-raid")
+@app_commands.choices(status=[app_commands.Choice(name="on", value="on"), app_commands.Choice(name="off", value="off")])
+async def antiraid(interaction: discord.Interaction, status: str):
+    db=get_db(); gid=str(interaction.guild.id)
+    if gid not in db["antiraid"]: db["antiraid"][gid]={}
+    db["antiraid"][gid]["enabled"]=(status=="on"); save_db(db)
+    e = be(discord.Embed(title="🛡️ Anti-Raid", description=f"Anti-Raid **{status.upper()}**\n> Détection: 5 joins / 10s = ban + lockdown auto\n> Anti-spam: 5 messages / 4s = timeout"), interaction)
+    await interaction.response.send_message(embed=e)
 
-@bot.command(name="helpall")
-async def helpall_cmd(ctx):
-    embed = discord.Embed(title="Permissions 1-10", color=0x9b59b6)
-    levels = {}
-    for cmd, lvl in data["cmd_levels"].items():
-        levels.setdefault(lvl, []).append(cmd)
-    for lvl in range(1, 11):
-        if lvl in levels:
-            embed.add_field(name=f"Niveau {lvl}", value=", ".join(levels[lvl]), inline=False)
-    await ctx.send(embed=embed)
+@bot.tree.command(name="ban", description="Bannir un membre")
+async def ban(interaction: discord.Interaction, membre: discord.Member, raison: str = "Aucune raison"):
+    if is_wl(membre.id): return await interaction.response.send_message(embed=be(discord.Embed(description="❌ Whitelist, impossible.")), ephemeral=True)
+    await membre.ban(reason=raison)
+    e = be(discord.Embed(title="🔨 Ban", description=f"**Membre:** {membre.mention} `{membre.id}`\n**Raison:** {raison}\n**Modérateur:** {interaction.user.mention}"), interaction)
+    e.color = 0xFF4444
+    e.set_thumbnail(url=membre.display_avatar.url)
+    await interaction.response.send_message(embed=e)
 
-if __name__ == "__main__":
-    bot.run(TOKEN)
+@bot.tree.command(name="kick", description="Expulser un membre")
+async def kick(interaction: discord.Interaction, membre: discord.Member, raison: str = "Aucune raison"):
+    await membre.kick(reason=raison)
+    e = be(discord.Embed(title="👢 Kick", description=f"{membre.mention} kick pour: {raison}"), interaction)
+    await interaction.response.send_message(embed=e)
+
+@bot.tree.command(name="timeout", description="Mute un membre")
+async def timeout(interaction: discord.Interaction, membre: discord.Member, minutes: int, raison: str = "Spam"):
+    await membre.timeout(timedelta(minutes=minutes), reason=raison)
+    e = be(discord.Embed(title="🔇 Timeout", description=f"{membre.mention} mute **{minutes}min**\nRaison: {raison}"), interaction)
+    await interaction.response.send_message(embed=e)
+
+@bot.tree.command(name="clear", description="Clear messages")
+async def clear(interaction: discord.Interaction, nombre: int):
+    await interaction.response.defer(ephemeral=True)
+    deleted = await interaction.channel.purge(limit=nombre)
+    e = be(discord.Embed(description=f"✅ **{len(deleted)}** messages supprimés."), interaction)
+    await interaction.followup.send(embed=e, ephemeral=True)
+
+@bot.tree.command(name="lock", description="Vérouiller le salon")
+async def lock(interaction: discord.Interaction):
+    await interaction.channel.set_permissions(interaction.guild.default_role, send_messages=False)
+    e = be(discord.Embed(title="🔒 Salon Vérouillé", description=f"{interaction.channel.mention} a été vérouillé."), interaction)
+    await interaction.response.send_message(embed=e)
+
+@bot.tree.command(name="unlock", description="Déverrouiller le salon")
+async def unlock(interaction: discord.Interaction):
+    await interaction.channel.set_permissions(interaction.guild.default_role, send_messages=True)
+    e = be(discord.Embed(title="🔓 Salon Déverrouillé", description=f"{interaction.channel.mention} déverrouillé."), interaction)
+    await interaction.response.send_message(embed=e)
+
+@bot.tree.command(name="serverinfo", description="Infos serveur")
+async def serverinfo(interaction: discord.Interaction):
+    g=interaction.guild
+    e = be(discord.Embed(title=f"💎 {g.name}", description=f"**Owner:** <@{g.owner_id}>\n**Membres:** {g.member_count}\n**Créé le:** <t:{int(g.created_at.timestamp())}:D>\n**Boosts:** {g.premium_subscription_count}"), interaction)
+    e.set_thumbnail(url=g.icon.url if g.icon else None)
+    e.add_field(name="Salons", value=len(g.channels))
+    e.add_field(name="Roles", value=len(g.roles))
+    await interaction.response.send_message(embed=e)
+
+@bot.tree.command(name="snipe", description="Voir le dernier message supprimé")
+async def snipe(interaction: discord.Interaction):
+    data = snipe_cache.get(interaction.channel.id)
+    if not data: return await interaction.response.send_message(embed=be(discord.Embed(description="Rien à snipe")), ephemeral=True)
+    e = be(discord.Embed(title="🗑️ Snipe", description=data["content"]), interaction)
+    e.set_author(name=str(data["author"]), icon_url=data["author"].display_avatar.url)
+    await interaction.response.send_message(embed=e)
+
+bot.run(TOKEN)
