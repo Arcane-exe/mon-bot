@@ -9,7 +9,7 @@ while value = amount:
     f.write(f'{code}\n')
     f.close()
     print(f'[GEN BY  >"Arcane] {code}')
-    value += 1
+    value = 1
 
 print('\n') ; print(f'dis moi merci, tu viens de générer {value -1} nitros uncheck\n ') ; print('Les codes ont été sauvegardé dans fichier ce nomant codes.txt\n')
 print('by >"Arcane\n')
