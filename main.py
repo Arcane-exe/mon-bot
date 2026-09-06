@@ -1,4 +1,3 @@
-from pyfade import Fade ,Colors 
 import random, string
 
 arcane = '''
@@ -12,7 +11,7 @@ arcane = '''
                                                        By Arcane                             
                                                                                                      
 '''
-print(Fade.Vertical(Colors.green_to_blue , arcane))
+print("Bot lancé")
 
 
 
