@@ -1,9 +1,9 @@
 const { MessageEmbed, Client } = require('discord.js');
 const { shuffle } = require("lodash");
-const bot = new Client();
-const token = process.env.TOKEN;
+const { Client, GatewayIntentBits } = require('discord.js');
+const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent] });
 
-client.login(token);
+client.login(process.env.TOKEN);
 
 let chars = [
     'A', 'B', 'C', 'D', 'E', 'F',
