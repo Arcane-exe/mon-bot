@@ -3,7 +3,7 @@ import random, string
 print('Bienvenue dans le gen de >"Arcane\n')
 amount = print('Combien de nitros UNCHECK veux-tu générer ?: ')
 value = 1
-while value = amount
+while value == amount
     code = "https://discord.gift/" + ('').join(random.choices(string.ascii_letters + string.digits, k=16))
     f = open('codes.txt', "a+")
     f.write(f'{code}\n')
