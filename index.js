@@ -1,6 +1,9 @@
 const { MessageEmbed, Client } = require('discord.js');
 const { shuffle } = require("lodash");
 const bot = new Client();
+const token = process.env.TOKEN;
+
+client.login(token);
 
 let chars = [
     'A', 'B', 'C', 'D', 'E', 'F',
