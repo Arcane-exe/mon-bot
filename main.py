@@ -370,4 +370,3 @@ def format_dure(ms):
 
 class GiveawayConfigSelect(discord.ui.Select):
     def __init__(self, guild_id):
- 
