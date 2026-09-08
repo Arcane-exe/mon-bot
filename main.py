@@ -1,7 +1,7 @@
 import discord
 from discord.ext import commands
 from discord import app_commands
-import os, json, re
+import os, json, re, random, string, asyncio
 from datetime import datetime, timedelta
 from collections import defaultdict
 from dotenv import load_dotenv
@@ -10,23 +10,34 @@ from flask import Flask
 
 load_dotenv()
 TOKEN = os.getenv("TOKEN")
+if not TOKEN:
+    print("ERREUR: TOKEN manquant dans les variables d'environnement Render")
+    exit(1)
 
 app = Flask(__name__)
 @app.route('/')
 def home(): return "Bot Arcane - ON"
 def run_web(): app.run(host="0.0.0.0", port=10000)
-threading.Thread(target=run_web).start()
+threading.Thread(target=run_web, daemon=True).start()
 
 DB_FILE = "db.json"
+DEFAULT_DB = {
+    "whitelist":[], "antilink":{}, "antispam":{}, "antibot":{},
+    "antichannel":{}, "antirole":{}, "antiban":{}, "antikick":{},
+    "antiraid":{}, "welcome":{}, "logs":{}, "autorole":{}, "warns":{},
+    "gwconfig":{}, "giveaways":{}
+}
 if not os.path.exists(DB_FILE):
-    json.dump({
-        "whitelist":[], "antilink":{}, "antispam":{}, "antibot":{},
-        "antichannel":{}, "antirole":{}, "antiban":{}, "antikick":{},
-        "antiraid":{}, "welcome":{}, "logs":{}, "autorole":{}, "warns":{},
-        "gwconfig":{}, "giveaways":{}
-    }, open(DB_FILE,"w"))
-def get_db(): return json.load(open(DB_FILE))
-def save_db(d): json.dump(d, open(DB_FILE,"w"), indent=4)
+    with open(DB_FILE,"w") as f: json.dump(DEFAULT_DB, f, indent=4)
+
+def get_db():
+    try:
+        with open(DB_FILE, "r") as f: return json.load(f)
+    except: return DEFAULT_DB
+
+def save_db(d):
+    with open(DB_FILE,"w") as f: json.dump(d, f, indent=4)
+
 def is_wl(uid): return uid in get_db()["whitelist"]
 
 intents = discord.Intents.all()
@@ -46,7 +57,8 @@ def be(embed, interaction=None):
 @bot.event
 async def on_ready():
     print(f"Connecté: {bot.user} | Bot Arcane")
-    await bot.tree.sync()
+    try: await bot.tree.sync()
+    except Exception as e: print(e)
 
 @bot.event
 async def on_message_delete(m):
@@ -78,7 +90,7 @@ async def on_message(message):
 
     if db["antispam"].get(gid, {}).get("enabled") or db["antiraid"].get(gid, {}).get("enabled"):
         spam_cache[message.author.id].append(datetime.now())
-        spam_cache[message.author.id] = [t for t in spam_cache[message.author.id] if (datetime.now()-t).seconds < 4]
+        spam_cache[message.author.id] = [t for t in spam_cache[message.author.id] if (datetime.now()-t).total_seconds() < 4]
         if len(spam_cache[message.author.id]) > 5:
             try:
                 await message.author.timeout(timedelta(minutes=5), reason="AntiSpam")
@@ -90,18 +102,15 @@ async def on_message(message):
 @bot.event
 async def on_member_join(member):
     db = get_db(); gid = str(member.guild.id)
-
     if db["antibot"].get(gid, {}).get("enabled"):
         if member.bot and not is_wl(member.id):
             try: await member.ban(reason="AntiBot"); return
             except: pass
-
     if gid in db["autorole"]:
         try:
             role = member.guild.get_role(db["autorole"][gid])
             if role: await member.add_roles(role)
         except: pass
-            
     if gid in db["welcome"]:
         try:
             ch = member.guild.get_channel(db["welcome"][gid])
@@ -110,16 +119,12 @@ async def on_member_join(member):
                 e.set_thumbnail(url=member.display_avatar.url)
                 await ch.send(embed=e)
         except: pass
-
     now = datetime.now()
     join_cache[gid].append(now)
-    join_cache[gid] = [t for t in join_cache[gid] if (now-t).seconds < 10]
+    join_cache[gid] = [t for t in join_cache[gid] if (now-t).total_seconds() < 10]
     if len(join_cache[gid]) > 5 and not is_wl(member.id) and db["antiraid"].get(gid, {}).get("enabled"):
         try:
             await member.ban(reason="AntiRaid")
-            for c in member.guild.channels:
-                try: await c.set_permissions(member.guild.default_role, send_messages=False)
-                except: pass
         except: pass
 
 @bot.event
@@ -132,30 +137,12 @@ async def on_guild_channel_create(channel):
         except: pass
 
 @bot.event
-async def on_guild_channel_delete(channel):
-    db=get_db(); gid=str(channel.guild.id)
-    if not db["antichannel"].get(gid, {}).get("enabled"): return
-    async for entry in channel.guild.audit_logs(limit=1, action=discord.AuditLogAction.channel_delete):
-        if is_wl(entry.user.id): return
-        try: await entry.user.ban(reason="AntiChannel Delete")
-        except: pass
-
-@bot.event
 async def on_guild_role_create(role):
     db=get_db(); gid=str(role.guild.id)
     if not db["antirole"].get(gid, {}).get("enabled"): return
     async for entry in role.guild.audit_logs(limit=1, action=discord.AuditLogAction.role_create):
         if is_wl(entry.user.id): return
         try: await role.delete(reason="AntiRole"); await entry.user.ban(reason="AntiRole")
-        except: pass
-
-@bot.event
-async def on_guild_role_delete(role):
-    db=get_db(); gid=str(role.guild.id)
-    if not db["antirole"].get(gid, {}).get("enabled"): return
-    async for entry in role.guild.audit_logs(limit=1, action=discord.AuditLogAction.role_delete):
-        if is_wl(entry.user.id): return
-        try: await entry.user.ban(reason="AntiRole Delete")
         except: pass
 
 @bot.event
@@ -170,20 +157,20 @@ async def on_member_ban(guild, user):
 class HelpSelect(discord.ui.Select):
     def __init__(self):
         super().__init__(placeholder="Choisis une catégorie...", options=[
-            discord.SelectOption(label="Protect", emoji="🛡️", description="antilink, antibot, antiraid, antichannel..."),
-            discord.SelectOption(label="Modération", emoji="🔨", description="ban, kick, timeout, clear, lock"),
-            discord.SelectOption(label="Gestion", emoji="⚙️", description="logs, welcome, autorole, whitelist"),
-            discord.SelectOption(label="Utile", emoji="💎", description="ping, avatar, serverinfo, snipe"),
+            discord.SelectOption(label="Protect", emoji="🛡️", description="antilink, antibot, antiraid..."),
+            discord.SelectOption(label="Modération", emoji="🔨", description="ban, kick, timeout..."),
+            discord.SelectOption(label="Gestion", emoji="⚙️", description="logs, welcome, autorole..."),
+            discord.SelectOption(label="Utile", emoji="💎", description="ping, avatar, snipe..."),
         ])
     async def callback(self, interaction: discord.Interaction):
         if self.values[0]=="Protect":
-            e = discord.Embed(title="🛡️ Protect - Arcane", description="```/antilink on/off\n/antispam on/off\n/antibot on/off\n/antichannel on/off\n/antirole on/off\n/antiban on/off\n/antikick on/off\n/antiraid on/off```\nBypass si whitelist/admin")
+            e = discord.Embed(title="🛡️ Protect", description="```/antilink on/off\n/antispam on/off\n/antibot on/off\n/antichannel on/off\n/antirole on/off\n/antiban on/off\n/antiraid on/off```", color=0x2B2D31)
         elif self.values[0]=="Modération":
-            e = discord.Embed(title="🔨 Modération", description="```/ban <membre> [raison]\n/kick <membre>\n/timeout <membre> <min>\n/unban <id>\n/clear <nombre>\n/lock\n/unlock\n/warn```")
+            e = discord.Embed(title="🔨 Modération", description="```/ban <membre>\n/kick <membre>\n/timeout <membre> <min>\n/unban <id>\n/clear <nombre>\n/lock /unlock```", color=0x2B2D31)
         elif self.values[0]=="Gestion":
-            e = discord.Embed(title="⚙️ Gestion", description="```/whitelist add/remove/list\n/setlogs #salon\n/setwelcome #salon\n/setautorole @role\n/panel```")
+            e = discord.Embed(title="⚙️ Gestion", description="```/whitelist add/remove/list\n/setlogs #salon\n/setwelcome #salon\n/setautorole @role\n/panel```", color=0x2B2D31)
         else:
-            e = discord.Embed(title="💎 Utile", description="```/ping\n/avatar [membre]\n/serverinfo\n/snipe\n/help```")
+            e = discord.Embed(title="💎 Utile", description="```/ping\n/avatar\n/serverinfo\n/snipe\n/help```", color=0x2B2D31)
         await interaction.response.edit_message(embed=be(e, interaction))
 
 class HelpView(discord.ui.View):
@@ -193,60 +180,60 @@ class ProtectView(discord.ui.View):
     def __init__(self): super().__init__(timeout=None)
     @discord.ui.button(label="AntiLink", style=discord.ButtonStyle.gray, emoji="🔗")
     async def al(self, interaction, button):
-        db=get_db(); gid=str(interaction.guild.id); enabled=not db["antilink"].get(gid,{}).get("enabled",False)
-        if gid not in db["antilink"]: db["antilink"][gid]={}
-        db["antilink"][gid]["enabled"]=enabled; save_db(db)
-        await interaction.response.send_message(f"AntiLink {'ON' if enabled else 'OFF'}", ephemeral=True)
+        db=get_db(); gid=str(interaction.guild.id); db["antilink"].setdefault(gid, {})["enabled"] = not db["antilink"].get(gid,{}).get("enabled",False); save_db(db)
+        await interaction.response.send_message(f"AntiLink {'ON' if db['antilink'][gid]['enabled'] else 'OFF'}", ephemeral=True)
     @discord.ui.button(label="AntiBot", style=discord.ButtonStyle.gray, emoji="🤖")
     async def ab(self, interaction, button):
-        db=get_db(); gid=str(interaction.guild.id); enabled=not db["antibot"].get(gid,{}).get("enabled",False)
-        if gid not in db["antibot"]: db["antibot"][gid]={}
-        db["antibot"][gid]["enabled"]=enabled; save_db(db)
-        await interaction.response.send_message(f"AntiBot {'ON' if enabled else 'OFF'}", ephemeral=True)
+        db=get_db(); gid=str(interaction.guild.id); db["antibot"].setdefault(gid, {})["enabled"] = not db["antibot"].get(gid,{}).get("enabled",False); save_db(db)
+        await interaction.response.send_message(f"AntiBot {'ON' if db['antibot'][gid]['enabled'] else 'OFF'}", ephemeral=True)
     @discord.ui.button(label="Activer Tout", style=discord.ButtonStyle.red, emoji="🚨")
     async def all_on(self, interaction, button):
         db=get_db(); gid=str(interaction.guild.id)
-        for k in ["antilink","antispam","antibot","antichannel","antirole","antiban","antikick","antiraid"]:
-            if gid not in db[k]: db[k][gid]={}
-            db[k][gid]["enabled"]=True
+        for k in ["antilink","antispam","antibot","antichannel","antirole","antiban","antiraid"]:
+            db.setdefault(k, {}).setdefault(gid, {})["enabled"]=True
         save_db(db)
         await interaction.response.send_message("✅ Toutes les protections ON", ephemeral=True)
 
 @bot.tree.command(name="help", description="Panel d'aide")
 async def help_cmd(interaction: discord.Interaction):
-    e = discord.Embed(title="Bot - Arcane Panel", description="> **Bot Arcane**\n> Anti-Raid, Anti-Link, Anti-Bot, Anti-Channel/Role/Ban\n\n`🛡️` Protect\n`🔨` Modération\n`⚙️` Gestion\n`💎` Utile\n\nUtilise `/panel` pour activer les protections", color=0x2B2D31)
+    e = discord.Embed(title="Bot - Arcane Panel", description="> **Bot Arcane**\n> Anti-Raid, Anti-Link, Anti-Bot\n\nUtilise `/panel` pour activer", color=0x2B2D31)
     e.set_thumbnail(url=bot.user.display_avatar.url)
     await interaction.response.send_message(embed=be(e, interaction), view=HelpView())
 
 @bot.tree.command(name="panel", description="Panel protection")
 async def panel(interaction: discord.Interaction):
     db=get_db(); gid=str(interaction.guild.id)
-    desc = f"**AntiLink:** {'🟢' if db['antilink'].get(gid,{}).get('enabled') else '🔴'}\n**AntiSpam:** {'🟢' if db['antispam'].get(gid,{}).get('enabled') else '🔴'}\n**AntiBot:** {'🟢' if db['antibot'].get(gid,{}).get('enabled') else '🔴'}\n**AntiChannel:** {'🟢' if db['antichannel'].get(gid,{}).get('enabled') else '🔴'}\n**AntiRole:** {'🟢' if db['antirole'].get(gid,{}).get('enabled') else '🔴'}\n**AntiBan:** {'🟢' if db['antiban'].get(gid,{}).get('enabled') else '🔴'}\n**AntiRaid:** {'🟢' if db['antiraid'].get(gid,{}).get('enabled') else '🔴'}"
+    desc = "\n".join([f"**{k}:** {'🟢' if db.get(k,{}).get(gid,{}).get('enabled') else '🔴'}" for k in ["antilink","antispam","antibot","antichannel","antirole","antiban","antiraid"]])
     e = discord.Embed(title="🛡️ Control Panel", description=desc, color=0x2B2D31)
     await interaction.response.send_message(embed=be(e, interaction), view=ProtectView())
 
-def make_toggle(name, key):
-    @bot.tree.command(name=name, description=f"Toggle {name}")
-    @app_commands.choices(status=[app_commands.Choice(name="on", value="on"), app_commands.Choice(name="off", value="off")])
-    async def cmd(interaction: discord.Interaction, status: str):
-        db=get_db(); gid=str(interaction.guild.id)
-        if gid not in db[key]: db[key][gid]={}
-        db[key][gid]["enabled"]=(status=="on"); save_db(db)
-        await interaction.response.send_message(embed=be(discord.Embed(title=f"🛡️ {name}", description=f"{name} **{status.upper()}**"), interaction))
-    return cmd
+@bot.tree.command(name="antilink", description="Toggle antilink")
+@app_commands.choices(status=[app_commands.Choice(name="on", value="on"), app_commands.Choice(name="off", value="off")])
+async def antilink_cmd(interaction: discord.Interaction, status: str):
+    db=get_db(); gid=str(interaction.guild.id); db.setdefault("antilink",{}).setdefault(gid,{})["enabled"]=(status=="on"); save_db(db)
+    await interaction.response.send_message(embed=be(discord.Embed(description=f"AntiLink **{status.upper()}**"), interaction))
 
-make_toggle("antilink","antilink")
-make_toggle("antispam","antispam")
-make_toggle("antibot","antibot")
-make_toggle("antichannel","antichannel")
-make_toggle("antirole","antirole")
-make_toggle("antiban","antiban")
-make_toggle("antikick","antikick")
-make_toggle("antiraid","antiraid")
+@bot.tree.command(name="antispam", description="Toggle antispam")
+@app_commands.choices(status=[app_commands.Choice(name="on", value="on"), app_commands.Choice(name="off", value="off")])
+async def antispam_cmd(interaction: discord.Interaction, status: str):
+    db=get_db(); gid=str(interaction.guild.id); db.setdefault("antispam",{}).setdefault(gid,{})["enabled"]=(status=="on"); save_db(db)
+    await interaction.response.send_message(embed=be(discord.Embed(description=f"AntiSpam **{status.upper()}**"), interaction))
 
+@bot.tree.command(name="antibot", description="Toggle antibot")
+@app_commands.choices(status=[app_commands.Choice(name="on", value="on"), app_commands.Choice(name="off", value="off")])
+async def antibot_cmd(interaction: discord.Interaction, status: str):
+    db=get_db(); gid=str(interaction.guild.id); db.setdefault("antibot",{}).setdefault(gid,{})["enabled"]=(status=="on"); save_db(db)
+    await interaction.response.send_message(embed=be(discord.Embed(description=f"AntiBot **{status.upper()}**"), interaction))
+
+@bot.tree.command(name="antiraid", description="Toggle antiraid")
+@app_commands.choices(status=[app_commands.Choice(name="on", value="on"), app_commands.Choice(name="off", value="off")])
+async def antiraid_cmd(interaction: discord.Interaction, status: str):
+    db=get_db(); gid=str(interaction.guild.id); db.setdefault("antiraid",{}).setdefault(gid,{})["enabled"]=(status=="on"); save_db(db)
+    await interaction.response.send_message(embed=be(discord.Embed(description=f"AntiRaid **{status.upper()}**"), interaction
+                                                     
 @bot.tree.command(name="whitelist", description="Whitelist")
 @app_commands.choices(action=[app_commands.Choice(name="add", value="add"), app_commands.Choice(name="remove", value="remove"), app_commands.Choice(name="list", value="list")])
-async def whitelist(interaction: discord.Interaction, action: str, membre: discord.Member = None):
+async def whitelist_cmd(interaction: discord.Interaction, action: str, membre: discord.Member = None):
     if not interaction.user.guild_permissions.administrator: return await interaction.response.send_message("❌ Pas admin", ephemeral=True)
     db=get_db()
     if action=="add" and membre:
@@ -259,17 +246,17 @@ async def whitelist(interaction: discord.Interaction, action: str, membre: disco
         lst="\n".join([f"<@{uid}> - {uid}" for uid in db["whitelist"]]) or "Vide"
         await interaction.response.send_message(embed=be(discord.Embed(title="Whitelist", description=lst), interaction), ephemeral=True)
 
-@bot.tree.command(name="setlogs", description="Logs")
+@bot.tree.command(name="setlogs", description="Definir salon logs")
 async def setlogs(interaction: discord.Interaction, salon: discord.TextChannel):
     db=get_db(); db["logs"][str(interaction.guild.id)]=salon.id; save_db(db)
     await interaction.response.send_message(embed=be(discord.Embed(description=f"Logs: {salon.mention}"), interaction))
 
-@bot.tree.command(name="setwelcome", description="Welcome")
+@bot.tree.command(name="setwelcome", description="Definir welcome")
 async def setwelcome(interaction: discord.Interaction, salon: discord.TextChannel):
     db=get_db(); db["welcome"][str(interaction.guild.id)]=salon.id; save_db(db)
     await interaction.response.send_message(embed=be(discord.Embed(description=f"Welcome: {salon.mention}"), interaction))
 
-@bot.tree.command(name="setautorole", description="Autorole")
+@bot.tree.command(name="setautorole", description="Definir autorole")
 async def setautorole(interaction: discord.Interaction, role: discord.Role):
     db=get_db(); db["autorole"][str(interaction.guild.id)]=role.id; save_db(db)
     await interaction.response.send_message(embed=be(discord.Embed(description=f"Autorole: {role.mention}"), interaction))
@@ -279,96 +266,8 @@ async def ban_slash(interaction: discord.Interaction, membre: discord.Member, ra
     if is_wl(membre.id): return await interaction.response.send_message("Whitelist", ephemeral=True)
     await membre.ban(reason=raison); await interaction.response.send_message(embed=be(discord.Embed(title="🔨 Ban", description=f"{membre.mention} banni: {raison}"), interaction))
 
-@bot.tree.command(name="kick", description="Kick")
-async def kick_slash(interaction: discord.Interaction, membre: discord.Member, raison: str="Aucune"):
-    await membre.kick(reason=raison); await interaction.response.send_message(embed=be(discord.Embed(description=f"{membre.mention} kick"), interaction))
-
-@bot.tree.command(name="timeout", description="Timeout")
-async def timeout_slash(interaction: discord.Interaction, membre: discord.Member, minutes: int, raison: str="Spam"):
-    await membre.timeout(timedelta(minutes=minutes), reason=raison); await interaction.response.send_message(embed=be(discord.Embed(description=f"{membre.mention} mute {minutes}min"), interaction))
-
-@bot.tree.command(name="clear", description="Clear")
-async def clear_slash(interaction: discord.Interaction, nombre: int):
-    await interaction.response.defer(ephemeral=True)
-    d = await interaction.channel.purge(limit=nombre)
-    await interaction.followup.send(f"✅ {len(d)} messages supprimés", ephemeral=True)
-
-@bot.tree.command(name="lock", description="Lock")
-async def lock_slash(interaction: discord.Interaction):
-    await interaction.channel.set_permissions(interaction.guild.default_role, send_messages=False)
-    await interaction.response.send_message(embed=be(discord.Embed(title="🔒 Vérouillé"), interaction))
-
-@bot.tree.command(name="unlock", description="Unlock")
-async def unlock_slash(interaction: discord.Interaction):
-    await interaction.channel.set_permissions(interaction.guild.default_role, send_messages=True)
-    await interaction.response.send_message(embed=be(discord.Embed(title="🔓 Déverrouillé"), interaction))
-
-@bot.tree.command(name="avatar", description="Avatar")
-async def avatar_slash(interaction: discord.Interaction, membre: discord.Member = None):
-    m=membre or interaction.user
-    e=discord.Embed(title=f"Avatar {m.name}", color=0x2B2D31); e.set_image(url=m.display_avatar.url)
-    await interaction.response.send_message(embed=be(e, interaction))
-
-@bot.tree.command(name="snipe", description="Snipe")
-async def snipe_slash(interaction: discord.Interaction):
-    data=snipe_cache.get(interaction.channel.id)
-    if not data: return await interaction.response.send_message("Rien à snipe", ephemeral=True)
-    e=discord.Embed(title="Snipe", description=data["content"], color=0x2B2D31); e.set_author(name=str(data["author"]), icon_url=data["author"].display_avatar.url)
-    await interaction.response.send_message(embed=e)
-
-@bot.tree.command(name="serverinfo", description="Infos")
-async def serverinfo_slash(interaction: discord.Interaction):
-    g=interaction.guild; e=discord.Embed(title=g.name, description=f"Owner: <@{g.owner_id}>\nMembres: {g.member_count}\nBoosts: {g.premium_subscription_count}", color=0x2B2D31)
-    e.set_thumbnail(url=g.icon.url if g.icon else None)
-    await interaction.response.send_message(embed=be(e, interaction))
-
 @bot.tree.command(name="ping", description="Ping")
 async def ping_slash(interaction: discord.Interaction):
     await interaction.response.send_message(embed=be(discord.Embed(description=f"🏓 {round(bot.latency*1000)}ms"), interaction))
 
-@bot.tree.command(name="warn", description="Warn un membre")
-async def warn_slash(interaction: discord.Interaction, membre: discord.Member, raison: str="Aucune"):
-    try: await membre.send(f"⚠️ Warn sur {interaction.guild.name}: {raison}")
-    except: pass
-    await interaction.response.send_message(embed=be(discord.Embed(description=f"⚠️ {membre.mention} warn: {raison}"), interaction))
-
-@bot.tree.command(name="unban", description="Unban par ID")
-async def unban_slash(interaction: discord.Interaction, user_id: str):
-    try:
-        user = await bot.fetch_user(int(user_id))
-        await interaction.guild.unban(user); await interaction.response.send_message(f"🔓 {user} débanni")
-    except: await interaction.response.send_message("❌ Introuvable", ephemeral=True)
-
-@bot.command(name="ban")
-@commands.has_permissions(ban_members=True)
-async def ban_p(ctx, member: discord.Member, *, reason=None):
-    if not is_wl(member.id): await member.ban(reason=reason); await ctx.send(f"🔨 {member} banni")
-
-import random, string, asyncio
-
-def gen_code(): return ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
-
-def get_gw_config(gid):
-    db=get_db()
-    if str(gid) not in db["gwconfig"]:
-        db["gwconfig"][str(gid)] = {
-            "prix": "Nitro x1", "dure": 600000, "emoji": "🎉",
-            "salon": None, "wins": 1, "roleinterdit": [], "rolerequis": [], "vocal": False
-        }
-        save_db(db)
-    return db["gwconfig"][str(gid)]
-
-def format_dure(ms):
-    s = ms // 1000
-    if s < 60: return f"{s}s"
-    m = s // 60
-    if m < 60: return f"{m}m"
-    h = m // 60
-    if h < 24: return f"{h}h {m%60}m"
-    d = h // 24
-    return f"{d}j {h%24}h"
-
-class GiveawayConfigSelect(discord.ui.Select):
-    def __init__(self, guild_id):
-
-        bot.run = ("TOKEN")
+bot.run(TOKEN)
